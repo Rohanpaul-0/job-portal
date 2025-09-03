@@ -25,7 +25,7 @@ export default function StickyCTA() {
           </a>
         </Button>
         <Button asChild size="sm" variant="outline" className="rounded-xl">
-          <a href="mailto:RohanPaulPotnuru@gmail.com"><Mail className="h-4 w-4 mr-1" />Email</a>
+          <a href="mailto:RohanPaul252@gmail.com"><Mail className="h-4 w-4 mr-1" />Email</a>
         </Button>
       </div>
     </div>
