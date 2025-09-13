@@ -1,9 +1,11 @@
+// src/app/api/chat/route.ts
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export const runtime = "nodejs";          // Node = easy env vars + streaming
 export const dynamic = "force-dynamic";   // don't cache
 
-type UiMsg = { role: "user" | "assistant" | "system"; content: string };
+type Role = "user" | "assistant" | "system";
+type UiMsg = { role: Role; content: string };
 
 // ---- Minimal in-memory cache (5 min TTL) ----
 type CacheEntry = { text: string; expires: number };
@@ -11,42 +13,53 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_CACHE = 100;
 const memCache = new Map<string, CacheEntry>();
 
-function cacheKey(q: string) {
+function cacheKey(q: string): string {
   return q.toLowerCase().trim();
 }
-function getCached(q: string) {
+function getCached(q: string): string | null {
   const k = cacheKey(q);
   const e = memCache.get(k);
   if (e && e.expires > Date.now()) return e.text;
   if (e) memCache.delete(k);
   return null;
 }
-function setCached(q: string, text: string) {
+function setCached(q: string, text: string): void {
   const k = cacheKey(q);
   memCache.set(k, { text, expires: Date.now() + CACHE_TTL_MS });
   // simple eviction
   if (memCache.size > MAX_CACHE) {
-    const first = memCache.keys().next().value;
-    memCache.delete(first);
+    const first = memCache.keys().next().value as string | undefined;
+    if (first) memCache.delete(first);
   }
 }
 
 // ---- Guardrails: quick unsafe/profanity check (adjust to taste) ----
 const BAD_WORDS = [
-  "kill", "suicide", "self harm", "bomb", "terror", "racial slur", "sexually explicit",
-  "porn", "nsfw", "hate", "harass",
+  "kill",
+  "suicide",
+  "self harm",
+  "bomb",
+  "terror",
+  "racial slur",
+  "sexually explicit",
+  "porn",
+  "nsfw",
+  "hate",
+  "harass",
 ];
-function isUnsafe(s: string) {
+function isUnsafe(s: string): boolean {
   const t = s.toLowerCase();
-  return BAD_WORDS.some(w => t.includes(w));
+  return BAD_WORDS.some((w) => t.includes(w));
 }
 
 // ---- Cost control: pick model based on complexity ----
-function isComplex(s: string) {
+function isComplex(s: string): boolean {
   const t = s.toLowerCase();
   return (
     s.length > 280 ||
-    /explain|compare|step[-\s]?by[-\s]?step|architect|design|trade[-\s]?offs|why|how do|code example/.test(t)
+    /explain|compare|step[-\s]?by[-\s]?step|architect|design|trade[-\s]?offs|why|how do|code example/.test(
+      t,
+    )
   );
 }
 
@@ -62,22 +75,36 @@ Rules:
 - If unsure, say so briefly and point to a relevant page.
 
 Facts to rely on:
-- Name: Rohan Paul Potnuru (Denton, Texas)
+- Name: Rohan Paul Potnuru (Humble, Texas)
 - Degree: M.S. in Computer Science — University of North Texas
 - Focus: AI/ML (LLMs, eval, prompt engineering), Cloud (AWS/Terraform/CI-CD), Full-Stack & APIs, Testing (Selenium/TestNG)
 - Stats: 15 projects, 6 publications/talks, 3+ years building
 `.trim();
 
-export async function POST(req: Request) {
+// Minimal type for Gemini parts to avoid `any`
+type GeminiPart = { text?: string; [k: string]: unknown };
+function extractTextFromParts(parts?: ReadonlyArray<GeminiPart>): string {
+  if (!parts) return "";
+  return parts.map((p) => (typeof p.text === "string" ? p.text : "")).join("");
+}
+
+export async function POST(req: Request): Promise<Response> {
   try {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return new Response(JSON.stringify({ reply: "Missing GEMINI_API_KEY" }), { status: 500 });
+      return new Response(JSON.stringify({ reply: "Missing GEMINI_API_KEY" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
-    const body = await req.json();
-    const msgs: UiMsg[] = Array.isArray(body?.messages) ? body.messages : [];
-    const lastUser = [...msgs].reverse().find(m => m.role === "user")?.content ?? "";
+    const body = (await req.json()) as { messages?: unknown };
+    const msgs: UiMsg[] = Array.isArray((body as { messages?: unknown }).messages)
+      ? ((body as { messages: UiMsg[] }).messages)
+      : [];
+
+    const lastUser =
+      [...msgs].reverse().find((m) => m.role === "user")?.content ?? "";
 
     // simple moderation
     if (isUnsafe(lastUser)) {
@@ -91,7 +118,10 @@ export async function POST(req: Request) {
       const cached = getCached(lastUser);
       if (cached) {
         return new Response(cached, {
-          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "no-store",
+          },
         });
       }
     }
@@ -112,8 +142,8 @@ export async function POST(req: Request) {
 
     // Transform UI messages to Gemini chat contents
     const contents = msgs
-      .filter(m => m.role !== "system")
-      .map(m => ({
+      .filter((m) => m.role !== "system")
+      .map((m) => ({
         role: m.role === "assistant" ? "model" : "user",
         parts: [{ text: m.content }],
       }));
@@ -124,19 +154,23 @@ export async function POST(req: Request) {
     let acc = "";
 
     return new Response(
-      new ReadableStream({
+      new ReadableStream<Uint8Array>({
         async start(controller) {
           try {
             for await (const chunk of result.stream) {
-              const piece =
-                chunk.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || "").join("") ?? "";
+              const piece = extractTextFromParts(
+                (chunk.candidates?.[0]?.content?.parts as
+                  | ReadonlyArray<GeminiPart>
+                  | undefined) ?? [],
+              );
               if (!piece) continue;
               acc += piece;
               controller.enqueue(encoder.encode(piece));
             }
-            // cache the full text (if we actually got anything)
+            // cache full text
             if (lastUser && acc.trim()) setCached(lastUser, acc);
-          } catch (e) {
+          } catch (_err) {
+            // keep streaming UX graceful
             controller.enqueue(encoder.encode("Sorry—something went wrong."));
           } finally {
             controller.close();
@@ -148,12 +182,13 @@ export async function POST(req: Request) {
           "Content-Type": "text/plain; charset=utf-8",
           "Cache-Control": "no-store",
         },
-      }
+      },
     );
   } catch (err) {
     console.error("[chat] error:", err);
-    return new Response(JSON.stringify({ reply: "Sorry—something went wrong. Please try again." }), {
-      status: 200,
-    });
+    return new Response(
+      JSON.stringify({ reply: "Sorry—something went wrong. Please try again." }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
   }
 }
