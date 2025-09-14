@@ -1,9 +1,11 @@
+// src/app/api/chat/route.ts
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-export const runtime = "nodejs";          // Node = easy env vars + streaming
-export const dynamic = "force-dynamic";   // don't cache
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-type UiMsg = { role: "user" | "assistant" | "system"; content: string };
+type Role = "user" | "assistant" | "system";
+type UiMsg = { role: Role; content: string };
 
 // ---- Minimal in-memory cache (5 min TTL) ----
 type CacheEntry = { text: string; expires: number };
@@ -24,24 +26,21 @@ function getCached(q: string) {
 function setCached(q: string, text: string) {
   const k = cacheKey(q);
   memCache.set(k, { text, expires: Date.now() + CACHE_TTL_MS });
-  // simple eviction
   if (memCache.size > MAX_CACHE) {
-    const first = memCache.keys().next().value;
-    memCache.delete(first);
+    const first = memCache.keys().next().value as string | undefined;
+    if (first) memCache.delete(first);
   }
 }
 
-// ---- Guardrails: quick unsafe/profanity check (adjust to taste) ----
+// ---- simple safety + cost control ----
 const BAD_WORDS = [
   "kill", "suicide", "self harm", "bomb", "terror", "racial slur", "sexually explicit",
   "porn", "nsfw", "hate", "harass",
 ];
 function isUnsafe(s: string) {
   const t = s.toLowerCase();
-  return BAD_WORDS.some(w => t.includes(w));
+  return BAD_WORDS.some((w) => t.includes(w));
 }
-
-// ---- Cost control: pick model based on complexity ----
 function isComplex(s: string) {
   const t = s.toLowerCase();
   return (
@@ -55,9 +54,9 @@ const systemPrompt = `
 You are the AI assistant on rohanpaul.org for Rohan Paul Potnuru.
 
 Rules:
-- Be concise, recruiter-friendly, and **≤ 120 words** unless asked for detail.
+- Be concise, recruiter-friendly, and ≤ 120 words unless asked for detail.
 - Prefer short bullets over long paragraphs.
-- Link with **site paths** when helpful: /projects, /publications, /skills, /resume, /contact.
+- Link with site paths when helpful: /projects, /publications, /skills, /resume, /contact.
 - Do not repeat the same “about me” intro each turn.
 - If unsure, say so briefly and point to a relevant page.
 
@@ -68,6 +67,12 @@ Facts to rely on:
 - Stats: 15 projects, 6 publications/talks, 3+ years building
 `.trim();
 
+// Small types so we don’t use `any`
+type TextPart = { text?: string };
+type PartContent = { parts?: TextPart[] };
+type Candidate = { content?: PartContent };
+type StreamChunk = { candidates?: Candidate[] };
+
 export async function POST(req: Request) {
   try {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -75,18 +80,22 @@ export async function POST(req: Request) {
       return new Response(JSON.stringify({ reply: "Missing GEMINI_API_KEY" }), { status: 500 });
     }
 
-    const body = await req.json();
-    const msgs: UiMsg[] = Array.isArray(body?.messages) ? body.messages : [];
-    const lastUser = [...msgs].reverse().find(m => m.role === "user")?.content ?? "";
+    // Parse/marshal request body without `any`
+    const raw: unknown = await req.json().catch(() => ({}));
+    const incoming = (raw as { messages?: unknown }).messages;
+    const messages: UiMsg[] = Array.isArray(incoming)
+      ? (incoming as UiMsg[])
+      : [];
 
-    // simple moderation
+    const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
+
     if (isUnsafe(lastUser)) {
       return new Response("I can’t help with that here.", {
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
     }
 
-    // cache check (exact question)
+    // cache: exact question
     if (lastUser) {
       const cached = getCached(lastUser);
       if (cached) {
@@ -96,9 +105,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // choose model by complexity
     const modelName = isComplex(lastUser) ? "gemini-1.5-pro" : "gemini-1.5-flash";
-
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
       model: modelName,
@@ -110,15 +117,13 @@ export async function POST(req: Request) {
       },
     });
 
-    // Transform UI messages to Gemini chat contents
-    const contents = msgs
-      .filter(m => m.role !== "system")
-      .map(m => ({
+    const contents = messages
+      .filter((m) => m.role !== "system")
+      .map((m) => ({
         role: m.role === "assistant" ? "model" : "user",
         parts: [{ text: m.content }],
       }));
 
-    // Stream response
     const result = await model.generateContentStream({ contents });
     const encoder = new TextEncoder();
     let acc = "";
@@ -127,16 +132,22 @@ export async function POST(req: Request) {
       new ReadableStream({
         async start(controller) {
           try {
-            for await (const chunk of result.stream) {
+            // The SDK exposes an `any`-typed iterator; narrow it here and
+            // disable the lint rule for this single use.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            for await (const chunk of result.stream as AsyncIterable<any>) {
+              const c = chunk as StreamChunk;
               const piece =
-                chunk.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || "").join("") ?? "";
+                c?.candidates?.[0]?.content?.parts
+                  ?.map((p: TextPart) => p.text ?? "")
+                  .join("") ?? "";
+
               if (!piece) continue;
               acc += piece;
               controller.enqueue(encoder.encode(piece));
             }
-            // cache the full text (if we actually got anything)
             if (lastUser && acc.trim()) setCached(lastUser, acc);
-          } catch (e) {
+          } catch (_err) {
             controller.enqueue(encoder.encode("Sorry—something went wrong."));
           } finally {
             controller.close();
@@ -150,8 +161,8 @@ export async function POST(req: Request) {
         },
       }
     );
-  } catch (err) {
-    console.error("[chat] error:", err);
+  } catch (_err) {
+    // note: `_err` avoids the "defined but never used" lint warning.
     return new Response(JSON.stringify({ reply: "Sorry—something went wrong. Please try again." }), {
       status: 200,
     });
