@@ -62,7 +62,7 @@ Rules:
 - If unsure, say so briefly and point to a relevant page.
 
 Facts to rely on:
-- Name: Rohan Paul Potnuru (Denton, Texas)
+- Name: Rohan Paul Potnuru (Humble, Texas)
 - Degree: M.S. in Computer Science — University of North Texas
 - Focus: AI/ML (LLMs, eval, prompt engineering), Cloud (AWS/Terraform/CI-CD), Full-Stack & APIs, Testing (Selenium/TestNG)
 - Stats: 15 projects, 6 publications/talks, 3+ years building
