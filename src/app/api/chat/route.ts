@@ -26,8 +26,8 @@ function setCached(q: string, text: string) {
   memCache.set(k, { text, expires: Date.now() + CACHE_TTL_MS });
   // simple eviction
   if (memCache.size > MAX_CACHE) {
-    const first = memCache.keys().next().value;
-    memCache.delete(first);
+    const first = memCache.keys().next().value as string | undefined;
+    if (first) memCache.delete(first);
   }
 }
 
@@ -38,7 +38,7 @@ const BAD_WORDS = [
 ];
 function isUnsafe(s: string) {
   const t = s.toLowerCase();
-  return BAD_WORDS.some(w => t.includes(w));
+  return BAD_WORDS.some((w) => t.includes(w));
 }
 
 // ---- Cost control: pick model based on complexity ----
@@ -62,11 +62,17 @@ Rules:
 - If unsure, say so briefly and point to a relevant page.
 
 Facts to rely on:
-- Name: Rohan Paul Potnuru (Denton, Texas)
+- Name: Rohan Paul Potnuru (Humble, Texas)
 - Degree: M.S. in Computer Science — University of North Texas
 - Focus: AI/ML (LLMs, eval, prompt engineering), Cloud (AWS/Terraform/CI-CD), Full-Stack & APIs, Testing (Selenium/TestNG)
 - Stats: 15 projects, 6 publications/talks, 3+ years building
 `.trim();
+
+// Minimal shapes so we don't use `any`
+type TextPart = { text?: string };
+type StreamChunk = {
+  candidates?: Array<{ content?: { parts?: Array<TextPart> } }>;
+};
 
 export async function POST(req: Request) {
   try {
@@ -77,7 +83,7 @@ export async function POST(req: Request) {
 
     const body = await req.json();
     const msgs: UiMsg[] = Array.isArray(body?.messages) ? body.messages : [];
-    const lastUser = [...msgs].reverse().find(m => m.role === "user")?.content ?? "";
+    const lastUser = [...msgs].reverse().find((m) => m.role === "user")?.content ?? "";
 
     // simple moderation
     if (isUnsafe(lastUser)) {
@@ -112,8 +118,8 @@ export async function POST(req: Request) {
 
     // Transform UI messages to Gemini chat contents
     const contents = msgs
-      .filter(m => m.role !== "system")
-      .map(m => ({
+      .filter((m) => m.role !== "system")
+      .map((m) => ({
         role: m.role === "assistant" ? "model" : "user",
         parts: [{ text: m.content }],
       }));
@@ -128,15 +134,17 @@ export async function POST(req: Request) {
         async start(controller) {
           try {
             for await (const chunk of result.stream) {
+              const c = chunk as StreamChunk;
               const piece =
-                chunk.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || "").join("") ?? "";
+                c.candidates?.[0]?.content?.parts?.map((p: TextPart) => p.text ?? "").join("") ?? "";
               if (!piece) continue;
               acc += piece;
               controller.enqueue(encoder.encode(piece));
             }
             // cache the full text (if we actually got anything)
             if (lastUser && acc.trim()) setCached(lastUser, acc);
-          } catch (e) {
+          } catch (_err) {
+            // keep response streaming-friendly; we don't rethrow here
             controller.enqueue(encoder.encode("Sorry—something went wrong."));
           } finally {
             controller.close();
