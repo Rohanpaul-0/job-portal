@@ -30,7 +30,7 @@ export default function HomePage() {
               <p className="font-semibold">
                 Master of Science in Computer Science — University of North Texas
               </p>
-              <p className="text-sm opacity-70">Denton, Texas</p>
+              <p className="text-sm opacity-70">Humble, Texas</p>
             </div>
 
             {/* Recruiter-focused tagline */}
