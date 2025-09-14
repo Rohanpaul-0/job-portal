@@ -1,7 +1,7 @@
 export const profile = {
   name: "Rohan Paul Potnuru",
   role: "Software Engineer",
-  location: "Denton, Texas",
+  location: "Humble, Texas",
   education: "M.S. in Computer Science — University of North Texas",
   summary:
     "Software Engineer specializing in AI/ML, Cloud (AWS), and full-stack development.",
