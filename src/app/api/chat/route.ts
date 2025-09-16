@@ -20,7 +20,7 @@ function getCached(q: string) {
   const k = cacheKey(q);
   const e = memCache.get(k);
   if (e && e.expires > Date.now()) return e.text;
-  if (e) memCache.delete(k);
+  if (e) memCache.delete(e as unknown as string);
   return null;
 }
 function setCached(q: string, text: string) {
@@ -32,20 +32,32 @@ function setCached(q: string, text: string) {
   }
 }
 
-// ---- simple safety + cost control ----
-const BAD_WORDS = [
-  "kill", "suicide", "self harm", "bomb", "terror", "racial slur", "sexually explicit",
-  "porn", "nsfw", "hate", "harass",
+// ---- Safety (regex with word boundaries) + cost control ----
+const UNSAFE_PATTERNS: RegExp[] = [
+  /\bkill(s|ed|ing)?\b/i,
+  /\bsuicide\b/i,
+  /\bself[-\s]?harm\b/i,
+  /\bbomb(s)?\b/i,
+  /\bterror(ism|ist|istic)?\b/i,
+  /\bracial\s+slur(s)?\b/i,
+  /\bsexual(ly)?\s+explicit\b/i,
+  /\bporn(ography|ographic)?\b/i,
+  /\bnsfw\b/i,
+  /\bhate(s|ful)?\b/i,
+  /\bharass(ment|ing)?\b/i,
 ];
+
 function isUnsafe(s: string) {
-  const t = s.toLowerCase();
-  return BAD_WORDS.some((w) => t.includes(w));
+  return UNSAFE_PATTERNS.some((re) => re.test(s));
 }
+
 function isComplex(s: string) {
   const t = s.toLowerCase();
   return (
     s.length > 280 ||
-    /explain|compare|step[-\s]?by[-\s]?step|architect|design|trade[-\s]?offs|why|how do|code example/.test(t)
+    /explain|compare|step[-\s]?by[-\s]?step|architect|design|trade[-\s]?offs|why|how do|code example/.test(
+      t
+    )
   );
 }
 
@@ -83,11 +95,10 @@ export async function POST(req: Request) {
     // Parse/marshal request body without `any`
     const raw: unknown = await req.json().catch(() => ({}));
     const incoming = (raw as { messages?: unknown }).messages;
-    const messages: UiMsg[] = Array.isArray(incoming)
-      ? (incoming as UiMsg[])
-      : [];
+    const messages: UiMsg[] = Array.isArray(incoming) ? (incoming as UiMsg[]) : [];
 
-    const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
+    const lastUser =
+      [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
 
     if (isUnsafe(lastUser)) {
       return new Response("I can’t help with that here.", {
@@ -100,7 +111,10 @@ export async function POST(req: Request) {
       const cached = getCached(lastUser);
       if (cached) {
         return new Response(cached, {
-          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "no-store",
+          },
         });
       }
     }
@@ -132,8 +146,6 @@ export async function POST(req: Request) {
       new ReadableStream({
         async start(controller) {
           try {
-            // The SDK exposes an `any`-typed iterator; narrow it here and
-            // disable the lint rule for this single use.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             for await (const chunk of result.stream as AsyncIterable<any>) {
               const c = chunk as StreamChunk;
@@ -141,7 +153,6 @@ export async function POST(req: Request) {
                 c?.candidates?.[0]?.content?.parts
                   ?.map((p: TextPart) => p.text ?? "")
                   .join("") ?? "";
-
               if (!piece) continue;
               acc += piece;
               controller.enqueue(encoder.encode(piece));
@@ -162,9 +173,9 @@ export async function POST(req: Request) {
       }
     );
   } catch (_err) {
-    // note: `_err` avoids the "defined but never used" lint warning.
-    return new Response(JSON.stringify({ reply: "Sorry—something went wrong. Please try again." }), {
-      status: 200,
-    });
+    return new Response(
+      JSON.stringify({ reply: "Sorry—something went wrong. Please try again." }),
+      { status: 200 }
+    );
   }
 }
