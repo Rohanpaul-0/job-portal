@@ -88,19 +88,24 @@ type StreamChunk = { candidates?: Candidate[] };
 export async function POST(req: Request) {
   try {
     const apiKey = process.env.GEMINI_API_KEY;
+    console.log('GEMINI_API_KEY check:', apiKey ? `Loaded (length: ${apiKey.length})` : 'MISSING!');
+    
     if (!apiKey) {
+      console.error('Missing GEMINI_API_KEY env var');
       return new Response(JSON.stringify({ reply: "Missing GEMINI_API_KEY" }), { status: 500 });
     }
-
+    
     // Parse/marshal request body without `any`
     const raw: unknown = await req.json().catch(() => ({}));
     const incoming = (raw as { messages?: unknown }).messages;
     const messages: UiMsg[] = Array.isArray(incoming) ? (incoming as UiMsg[]) : [];
+    console.log('Request received with messages:', JSON.stringify(messages, null, 2));
 
     const lastUser =
       [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
 
     if (isUnsafe(lastUser)) {
+      console.log('Unsafe content detected:', lastUser);
       return new Response("I can’t help with that here.", {
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
@@ -110,6 +115,7 @@ export async function POST(req: Request) {
     if (lastUser) {
       const cached = getCached(lastUser);
       if (cached) {
+        console.log('Cache hit for:', lastUser);
         return new Response(cached, {
           headers: {
             "Content-Type": "text/plain; charset=utf-8",
@@ -119,7 +125,10 @@ export async function POST(req: Request) {
       }
     }
 
-    const modelName = isComplex(lastUser) ? "gemini-1.5-pro" : "gemini-1.5-flash";
+    // Updated to supported models as of late 2025 (gemini-1.5 series deprecated)
+    const modelName = isComplex(lastUser) ? "gemini-2.5-pro" : "gemini-2.5-flash";
+    console.log('Using model:', modelName);
+    
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
       model: modelName,
@@ -138,6 +147,7 @@ export async function POST(req: Request) {
         parts: [{ text: m.content }],
       }));
 
+    console.log('Initiating Gemini stream generation');
     const result = await model.generateContentStream({ contents });
     const encoder = new TextEncoder();
     let acc = "";
@@ -157,8 +167,12 @@ export async function POST(req: Request) {
               acc += piece;
               controller.enqueue(encoder.encode(piece));
             }
-            if (lastUser && acc.trim()) setCached(lastUser, acc);
-          } catch (_err) {
+            if (lastUser && acc.trim()) {
+              setCached(lastUser, acc);
+              console.log('Stream complete, cached response for:', lastUser);
+            }
+          } catch (err) {
+            console.error('Stream error details:', err);  // Keep logging for now
             controller.enqueue(encoder.encode("Sorry—something went wrong."));
           } finally {
             controller.close();
@@ -172,10 +186,14 @@ export async function POST(req: Request) {
         },
       }
     );
-  } catch (_err) {
+  } catch (err) {
+    console.error('Outer API error details:', err);  // Keep logging for now
     return new Response(
       JSON.stringify({ reply: "Sorry—something went wrong. Please try again." }),
       { status: 200 }
     );
+    // Debug version (uncomment if needed):
+    // const errorMsg = `OUTER ERROR DEBUG: ${err instanceof Error ? err.message : 'Unknown outer error'}\n`;
+    // return new Response(errorMsg, { status: 500 });
   }
 }
