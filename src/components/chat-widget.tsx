@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MessageCircle, Send, X, Trash2 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 
 type ChatMessage = { id: string; role: 'user' | 'assistant'; content: string };
 
